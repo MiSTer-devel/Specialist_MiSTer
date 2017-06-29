@@ -92,6 +92,8 @@ assign VIDEO_ARY = status[9] ? 8'd9  : 8'd3;
 assign CLK_VIDEO = clk_sys;
 
 assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = 0;
+assign {SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 6'b111111;
+assign SDRAM_DQ = {16{1'bZ}};
 
 
 `include "build_id.v"
@@ -147,6 +149,7 @@ hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
 	.conf_str(CONF_STR),
 	.sd_conf(0),
 	.ioctl_force_erase(status[6]),
+	.ioctl_wait(0),
 
 	// unused
 	.sd_ack_conf(),
@@ -170,7 +173,6 @@ pll pll
 	.refclk(CLK_50M),
 	.rst(0),
 	.outclk_0(clk_sys),
-	.outclk_1(SDRAM_CLK),
 	.locked(locked)
 );
 
@@ -205,8 +207,14 @@ end
 reg       reset = 0;
 reg [7:0] mon;
 
+reg       sys_ready = 0;
 always @(posedge clk_sys) begin
-	if(status[0] | buttons[1] | reset_key[0] | rom_load | ioctl_erasing) begin
+	reg old_rst = 0;
+
+	old_rst <= status[0];
+	if(old_rst & ~status[0]) sys_ready <= 1;
+
+	if(RESET | ~sys_ready | buttons[1] | reset_key[0] | rom_load | ioctl_erasing) begin
 		mx    <= (status[3:2] >0);
 		mxd   <= (status[3:2]==1) && ~reset_key[1];
 		mon   <= (status[3:2]==0) ? 8'h1C : ((status[3:2]==1) && reset_key[1]) ? 8'h0C : 8'h1D;
@@ -218,22 +226,27 @@ end
 
 
 //////////////////   MEMORY   ////////////////////
-wire  [7:0] ram_o;
-sdram ram
-( 
-	.*,
-	.init(!locked),
-	.clk_sdram(clk_sys),
-	.dout(ram_o),
-	.din ((ioctl_download | ioctl_erasing) ? ioctl_dout : cpu_o    ),
-	.addr((ioctl_download | ioctl_erasing) ? ioctl_addr : ram_addr ),
-	.we  ((ioctl_download | ioctl_erasing) ? ioctl_wr   : ~cpu_wr_n & ~rom_sel),
-	.rd  ((ioctl_download | ioctl_erasing) ? 1'b0       : cpu_rd   ),
-	.ready()
+wire  [7:0] ram_dout;
+
+memory memory
+(
+	.clock(clk_sys),
+
+	.address_a(ioctl_addr[15:0]),
+	.data_a(ioctl_dout),
+	.wren_a(ioctl_wr && !ioctl_addr[24:16]),
+	.q_a(),
+
+	.address_b(ram_addr[18:0]),
+	.data_b(cpu_o),
+	.wren_b(~cpu_wr_n && ~rom_sel && (ram_addr < 393216)),
+	.q_b(ram_dout)
 );
 
-reg [3:0] page = 1;
-wire      romp = (page == 1);
+wire [7:0] mem_o = (ram_addr < 393216) ? ram_dout : 8'hFF;
+
+reg  [3:0] page = 1;
+wire       romp = (page == 1);
 always @(posedge clk_sys) begin
 	reg old_wr;
 	old_wr <= cpu_wr_n;
@@ -295,11 +308,11 @@ always_comb begin
 	casex({mx, mxd, romp, addrbus})
 
 		//MX
-		'b11_1_0XXXXXXX_XXXXXXXX: begin cpu_i = ram_o;  rom_sel  = 1;    end
-		'b11_1_10XXXXXX_XXXXXXXX: begin cpu_i = ram_o;  rom_sel  = 1;    end
-		'b10_1_0000XXXX_XXXXXXXX: begin cpu_i = ram_o;  rom_sel  = 1;    end
-		'b10_X_1100XXXX_XXXXXXXX: begin cpu_i = ram_o;  rom_sel  = 1;    end
-		'b1X_X_11111111_110XXXXX: begin cpu_i = ram_o;  base_sel = 1;    end
+		'b11_1_0XXXXXXX_XXXXXXXX: begin cpu_i = mem_o;  rom_sel  = 1;    end
+		'b11_1_10XXXXXX_XXXXXXXX: begin cpu_i = mem_o;  rom_sel  = 1;    end
+		'b10_1_0000XXXX_XXXXXXXX: begin cpu_i = mem_o;  rom_sel  = 1;    end
+		'b10_X_1100XXXX_XXXXXXXX: begin cpu_i = mem_o;  rom_sel  = 1;    end
+		'b1X_X_11111111_110XXXXX: begin cpu_i = mem_o;  base_sel = 1;    end
 		'b1X_X_11111111_111000XX: begin cpu_i = ppi1_o; ppi1_sel = 1;    end
 		'b1X_X_11111111_111001XX: begin cpu_i = ppi2_o; ppi2_sel = 1;    end
 		'b1X_X_11111111_111010XX: begin cpu_i = fdd_o;  fdd_sel  = 1;    end
@@ -310,12 +323,12 @@ always_comb begin
 		'b1X_X_11111111_111111XX: begin                 page_sel = 1;    end
 
 		//Original
-		'b0X_1_0000XXXX_XXXXXXXX: begin cpu_i = ram_o;  rom_sel  = 1;    end
-		'b0X_X_1100XXXX_XXXXXXXX: begin cpu_i = ram_o;  rom_sel  = 1;    end
+		'b0X_1_0000XXXX_XXXXXXXX: begin cpu_i = mem_o;  rom_sel  = 1;    end
+		'b0X_X_1100XXXX_XXXXXXXX: begin cpu_i = mem_o;  rom_sel  = 1;    end
 		'b0X_X_11110XXX_XXXXXXXX: begin cpu_i = ppi2_o; ppi2_sel = 1;    end
 		'b0X_X_11111XXX_XXXXXXXX: begin cpu_i = ppi1_o; ppi1_sel = 1;    end
 
-							  default: begin cpu_i = ram_o;  base_sel = romp; end
+							  default: begin cpu_i = mem_o;  base_sel = romp; end
 	endcase
 end
 
@@ -531,5 +544,76 @@ always @(posedge clk_sys) begin
 		if(fdd_drq | ~fdd_busy) cpu_hold <= 0;
 	end
 end
+
+endmodule
+
+module memory
+(
+	input	       clock,
+
+	input [18:0] address_a,
+	input	 [7:0] data_a,
+	input	       wren_a,
+	output [7:0] q_a,
+
+	input	[18:0] address_b,
+	input	 [7:0] data_b,
+	input	       wren_b,
+	output [7:0] q_b
+);
+
+altsyncram	altsyncram_component (
+			.address_a (address_a),
+			.address_b (address_b),
+			.clock0 (clock),
+			.data_a (data_a),
+			.data_b (data_b),
+			.wren_a (wren_a),
+			.wren_b (wren_b),
+			.q_a (q_a),
+			.q_b (q_b),
+			.aclr0 (1'b0),
+			.aclr1 (1'b0),
+			.addressstall_a (1'b0),
+			.addressstall_b (1'b0),
+			.byteena_a (1'b1),
+			.byteena_b (1'b1),
+			.clock1 (1'b1),
+			.clocken0 (1'b1),
+			.clocken1 (1'b1),
+			.clocken2 (1'b1),
+			.clocken3 (1'b1),
+			.eccstatus (),
+			.rden_a (1'b1),
+			.rden_b (1'b1));
+defparam
+	altsyncram_component.address_reg_b = "CLOCK0",
+	altsyncram_component.clock_enable_input_a = "BYPASS",
+	altsyncram_component.clock_enable_input_b = "BYPASS",
+	altsyncram_component.clock_enable_output_a = "BYPASS",
+	altsyncram_component.clock_enable_output_b = "BYPASS",
+	altsyncram_component.indata_reg_b = "CLOCK0",
+	altsyncram_component.init_file = "bios.mif",
+	altsyncram_component.intended_device_family = "Cyclone V",
+	altsyncram_component.lpm_type = "altsyncram",
+	altsyncram_component.numwords_a = 393216,
+	altsyncram_component.numwords_b = 393216,
+	altsyncram_component.operation_mode = "BIDIR_DUAL_PORT",
+	altsyncram_component.outdata_aclr_a = "NONE",
+	altsyncram_component.outdata_aclr_b = "NONE",
+	altsyncram_component.outdata_reg_a = "UNREGISTERED",
+	altsyncram_component.outdata_reg_b = "UNREGISTERED",
+	altsyncram_component.power_up_uninitialized = "FALSE",
+	altsyncram_component.read_during_write_mode_mixed_ports = "DONT_CARE",
+	altsyncram_component.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
+	altsyncram_component.read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ",
+	altsyncram_component.widthad_a = 19,
+	altsyncram_component.widthad_b = 19,
+	altsyncram_component.width_a = 8,
+	altsyncram_component.width_b = 8,
+	altsyncram_component.width_byteena_a = 1,
+	altsyncram_component.width_byteena_b = 1,
+	altsyncram_component.wrcontrol_wraddress_reg_b = "CLOCK0";
+
 
 endmodule
