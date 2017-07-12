@@ -153,6 +153,7 @@ hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
 
 	// unused
 	.sd_ack_conf(),
+	.img_readonly(),
 
 	.joystick_0(),
 	.joystick_1(),
