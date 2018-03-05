@@ -118,7 +118,7 @@ localparam CONF_STR =
 	"O4,CPU Speed,2MHz,4MHz;",
 	"O23,Model,Original,MX & Disk,MX;",
 	"-;",
-	"T6,Cold Reset;",
+	"R6,Cold Reset;",
 	"V0,v2.21.",`BUILD_DATE
 };
 
@@ -570,7 +570,7 @@ reg  [7:0] fill_data;
 reg  [24:0] erase_mask;
 wire [24:0] next_erase = (fill_addr + 1'd1) & erase_mask;
 
-wire       force_erase = status[6] | status[0];
+wire       force_erase = status[6];
 
 always@(posedge clk_sys) begin
 	reg [24:0] addr;
@@ -579,7 +579,6 @@ always@(posedge clk_sys) begin
 
 	reg  [5:0] erase_clk_div;
 	reg [24:0] end_addr;
-	reg        erase_trigger = 0;
 
 	reg [15:0] start_addr;
 
@@ -587,61 +586,52 @@ always@(posedge clk_sys) begin
 	wr <= 0;
 
 	if(ioctl_download) begin
-		erasing   <= 0;
-		erase_trigger <= !ioctl_index;
+		erasing <= 0;
 
 		if(ioctl_wr) begin
-			if(!ioctl_index) begin
-				/*
-				fill_addr <= 25'h10000 + ioctl_addr;  // BOOT ROM
-				fill_data <= ioctl_dout;
-				wr <= 1;
-				*/
-			end
-			else begin
+			if(ioctl_index) begin
 				case(ioctl_addr)
 					0: begin
 							start_addr[7:0] <= ioctl_dout;
 							fill_data <= 8'hC3;
 							fill_addr <= 0;
-							wr   <= 1;
+							wr <= 1;
 						end
-						
+
 					1: begin
 							start_addr[15:8] <= ioctl_dout;
 							fill_data <= start_addr[7:0];
 							fill_addr <= 1;
-							wr   <= 1;
+							wr <= 1;
 						end
 
 					2: begin
 							fill_data <= start_addr[15:8];
 							fill_addr <= 2;
-							wr   <= 1;
+							wr <= 1;
 						end
 
 					3: begin
 							addr <= start_addr;
 						end
-						
+
 					default:
 						begin
 							fill_addr <= addr;
 							fill_data <= ioctl_dout;
 							addr <= addr + 1'd1;
-							wr   <= 1;
+							wr <= 1;
 						end
 				endcase
 			end
 		end
-		
+
 	end else begin
-	
+
 		old_force <= force_erase;
-	
+
 		// start erasing
 		if(force_erase & ~old_force) begin
-			erase_trigger <= 0;
 			fill_addr     <= 25'h1FFFF;
 			erase_mask    <= 25'h7FFFF;
 			end_addr      <= 25'h10000;
