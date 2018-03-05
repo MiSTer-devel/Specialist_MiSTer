@@ -18,8 +18,7 @@ module keyboard
 	input           reset,
 	input           clk_sys,
 
-	input           ps2_kbd_clk,
-	input           ps2_kbd_data,
+	input    [10:0] ps2_key,
 
 	input           mx,
 	input     [5:0] row_in,
@@ -62,8 +61,8 @@ reg  [2:0] c;
 reg  [3:0] r;
 reg [11:0] shift_reg;
 
-wire[11:0] kdata = {ps2_kbd_data,shift_reg[11:1]};
-wire [7:0] kcode = kdata[9:2];
+wire [7:0] kcode   = {ps2_key[7:0]};
+wire       pressed = ps2_key[9];
 
 /*
    5    5MX  4   3   2   1   0
@@ -127,7 +126,7 @@ always @(*) begin
 	13'hX13E: {c,r} = 7'h30; // *
 	13'hX13D: {c,r} = 7'h45; // &
 	13'hX136: {c,r} = 7'h44; // '
-	
+
 	13'hXX4C: {c,r} = 7'h30; // ;
 	13'hXX33: {c,r} = 7'h31; // H
 	13'hXX1A: {c,r} = 7'h32; // Z
@@ -183,45 +182,33 @@ always @(*) begin
 
 	13'hXX12: {c,r} = 7'h0C; // lshift - NR
 
-	default: {c,r} = 7'h7F;
+	 default: {c,r} = 7'h7F;
 	endcase
 end
 
 always @(posedge clk_sys) begin
 	reg mctrl, malt;
 	reg old_reset;
-	reg unpress;
-	reg [3:0] prev_clk;
+	reg old_stb;
+
+	old_stb <= ps2_key[10];
 
 	color_key <= 0;
 	old_reset <= reset;
 	if(!old_reset && reset) begin
-		prev_clk <= 0;
-		shift_reg <= 12'hFFF;
-		unpress <= 0;
 		col_state <= '{default:0};
 		row_state <= '{default:0};
 	end else begin
-		prev_clk <= {ps2_kbd_clk,prev_clk[3:1]};
-		if (prev_clk==4'b1) begin
-			if (kdata[11]==1'b1 && ^kdata[10:2]==1'b1 && kdata[1:0]==2'b1) begin
-				shift_reg <= 12'hFFF;
-				if (kcode==8'h14) mctrl     <= ~unpress;
-				if (kcode==8'h11) malt      <= ~unpress;
-				if (kcode==8'h78) {color_key, reset_key} <= {~(malt | mctrl) & ~unpress, malt & ~unpress, (malt | mctrl) & ~unpress};
-				if (kcode==8'hF0) unpress   <= 1;
+		if (old_stb != ps2_key[10]) begin
+			if (kcode==8'h14) mctrl <= pressed;
+			if (kcode==8'h11) malt  <= pressed;
+			if (kcode==8'h78) {color_key, reset_key} <= {~(malt | mctrl) & pressed, malt & pressed, (malt | mctrl) & pressed};
+			if((~mctrl | ~pressed) & (r != 4'hF)) begin
+				if(r == 4'hC) knr <= pressed;
 				else begin
-					unpress <= 0;
-					if((~mctrl | unpress) & (r != 4'hF)) begin
-						if(r == 4'hC) knr <= ~unpress;
-						else begin
-							col_state[c][r] <= ~unpress;
-							row_state[r][c] <= ~unpress;
-						end
-					end
+					col_state[c][r] <= pressed;
+					row_state[r][c] <= pressed;
 				end
-			end else begin
-				shift_reg <= kdata;
 			end
 		end
 	end

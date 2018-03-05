@@ -1,7 +1,7 @@
 // ====================================================================
 //                Specialist FPGA REPLICA
 //
-//            Copyright (C) 2016-2017 Sorgelig
+//            Copyright (C) 2016-2018 Sorgelig
 //
 // This core is distributed under modified GNU GPL v2 license. 
 // For complete licensing information see LICENSE.TXT.
@@ -21,7 +21,7 @@ module emu
 	input         RESET,
 
 	//Must be passed to hps_io module
-	inout  [37:0] HPS_BUS,
+	inout  [44:0] HPS_BUS,
 
 	//Base video clock. Usually equals to CLK_SYS.
 	output        CLK_VIDEO,
@@ -43,7 +43,7 @@ module emu
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
-	// b[1]: 0 - LED status is system status ORed with b[0]
+	// b[1]: 0 - LED status is system status OR'd with b[0]
 	//       1 - LED status is controled solely by b[0]
 	// hint: supply 2'b00 to let the system control the LED.
 	output  [1:0] LED_POWER,
@@ -51,8 +51,16 @@ module emu
 
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
-	output        AUDIO_S, // 1 - signed audio samples, 0 - unsigned
+	output        AUDIO_S,   // 1 - signed audio samples, 0 - unsigned
+	output  [1:0] AUDIO_MIX, // 0 - no mix, 1 - 25%, 2 - 50%, 3 - 100% (mono)
 	input         TAPE_IN,
+
+	// SD-SPI
+	output        SD_SCK,
+	output        SD_MOSI,
+	input         SD_MISO,
+	output        SD_CS,
+	input         SD_CD,
 
 	//High latency DDR3 RAM interface
 	//Use for non-critical time purposes
@@ -81,19 +89,19 @@ module emu
 	output        SDRAM_nWE
 );
 
+assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
+assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = 0;
+assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
+
 assign AUDIO_S   = 0;
 
-assign LED_USER  = ioctl_download | ioctl_erasing;
+assign LED_USER  = filling;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 
 assign VIDEO_ARX = status[9] ? 8'd16 : 8'd4;
 assign VIDEO_ARY = status[9] ? 8'd9  : 8'd3;
 assign CLK_VIDEO = clk_sys;
-
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = 0;
-assign {SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 6'b111111;
-assign SDRAM_DQ = {16{1'bZ}};
 
 
 `include "build_id.v"
@@ -111,7 +119,7 @@ localparam CONF_STR =
 	"O23,Model,Original,MX & Disk,MX;",
 	"-;",
 	"T6,Cold Reset;",
-	"V0,v2.20.",`BUILD_DATE
+	"V0,v2.21.",`BUILD_DATE
 };
 
 
@@ -119,18 +127,14 @@ localparam CONF_STR =
 wire [31:0] status;
 wire  [1:0] buttons;
 wire        forced_scandoubler;
-wire        ps2_kbd_clk;
-wire        ps2_kbd_data;
+wire [10:0] ps2_key;
 
 wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
 wire        ioctl_download;
-wire        ioctl_erasing;
 wire  [7:0] ioctl_index;
-wire        rom_load =  (ioctl_download & (ioctl_index==0));
 wire        rks_load =  (ioctl_download & (ioctl_index==1));
-wire        odi_load =  (ioctl_download & (ioctl_index==2));
 
 wire [31:0] sd_lba;
 wire        sd_rd;
@@ -148,22 +152,30 @@ hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
 	.*,
 	.conf_str(CONF_STR),
 	.sd_conf(0),
-	.ioctl_force_erase(status[6]),
 	.ioctl_wait(0),
+	.ps2_key(ps2_key),
 
 	// unused
 	.sd_ack_conf(),
 	.img_readonly(),
 
+	.RTC(),
+	.TIMESTAMP(),
 	.joystick_0(),
 	.joystick_1(),
 	.joystick_analog_0(),
 	.joystick_analog_1(),
-
+	.ps2_kbd_clk_out(),
+	.ps2_kbd_data_out(),
+	.ps2_kbd_clk_in(0),
+	.ps2_kbd_data_in(0),
+	.ps2_mouse(),
+	.ps2_mouse_clk_out(),
+	.ps2_mouse_data_out(),
+	.ps2_mouse_clk_in(0),
+	.ps2_mouse_data_in(0),
 	.ps2_kbd_led_use(0),
-	.ps2_kbd_led_status(0),
-	.ps2_mouse_clk(),
-	.ps2_mouse_data()
+	.ps2_kbd_led_status(0)
 );
 
 
@@ -215,7 +227,7 @@ always @(posedge clk_sys) begin
 	old_rst <= status[0];
 	if(old_rst & ~status[0]) sys_ready <= 1;
 
-	if(RESET | ~sys_ready | buttons[1] | reset_key[0] | rom_load | ioctl_erasing) begin
+	if(RESET | ~sys_ready | buttons[1] | reset_key[0] | erasing) begin
 		mx    <= (status[3:2] >0);
 		mxd   <= (status[3:2]==1) && ~reset_key[1];
 		mon   <= (status[3:2]==0) ? 8'h1C : ((status[3:2]==1) && reset_key[1]) ? 8'h0C : 8'h1D;
@@ -233,9 +245,9 @@ memory memory
 (
 	.clock(clk_sys),
 
-	.address_a(ioctl_addr[15:0]),
-	.data_a(ioctl_dout),
-	.wren_a(ioctl_wr && !ioctl_addr[24:16]),
+	.address_a(fill_addr[18:0]),
+	.data_a(fill_data),
+	.wren_a(fill_wr && (fill_addr[18:16] != 1)),
 	.q_a(),
 
 	.address_b(ram_addr[18:0]),
@@ -352,7 +364,7 @@ k580vm80a cpu
    .pin_dout(cpu_o),
    .pin_din(cpu_i),
    .pin_hold(cpu_hold),
-   .pin_ready(~odi_load),
+   .pin_ready(1),
    .pin_int(0),
    .pin_dbin(cpu_rd),
    .pin_wr_n(cpu_wr_n)
@@ -447,6 +459,7 @@ k580vv55 ppi2
 reg spk_out;
 assign AUDIO_R = {16{(pit_out[0] | pit_o[2]) & ~spk_out}};
 assign AUDIO_L = AUDIO_R;
+assign AUDIO_MIX = 0;
 
 wire [7:0] pit_o;
 wire [2:0] pit_out;
@@ -543,6 +556,108 @@ always @(posedge clk_sys) begin
 		end
 
 		if(fdd_drq | ~fdd_busy) cpu_hold <= 0;
+	end
+end
+
+/////////////////////////////////////////////////
+
+wire       filling = (ioctl_download | erasing);
+reg        erasing = 0;
+reg        fill_wr;
+reg [24:0] fill_addr;
+reg  [7:0] fill_data;
+
+reg  [24:0] erase_mask;
+wire [24:0] next_erase = (fill_addr + 1'd1) & erase_mask;
+
+wire       force_erase = status[6] | status[0];
+
+always@(posedge clk_sys) begin
+	reg [24:0] addr;
+	reg        old_force = 0;
+	reg        wr;
+
+	reg  [5:0] erase_clk_div;
+	reg [24:0] end_addr;
+	reg        erase_trigger = 0;
+
+	reg [15:0] start_addr;
+
+	fill_wr <= wr;
+	wr <= 0;
+
+	if(ioctl_download) begin
+		erasing   <= 0;
+		erase_trigger <= !ioctl_index;
+
+		if(ioctl_wr) begin
+			if(!ioctl_index) begin
+				/*
+				fill_addr <= 25'h10000 + ioctl_addr;  // BOOT ROM
+				fill_data <= ioctl_dout;
+				wr <= 1;
+				*/
+			end
+			else begin
+				case(ioctl_addr)
+					0: begin
+							start_addr[7:0] <= ioctl_dout;
+							fill_data <= 8'hC3;
+							fill_addr <= 0;
+							wr   <= 1;
+						end
+						
+					1: begin
+							start_addr[15:8] <= ioctl_dout;
+							fill_data <= start_addr[7:0];
+							fill_addr <= 1;
+							wr   <= 1;
+						end
+
+					2: begin
+							fill_data <= start_addr[15:8];
+							fill_addr <= 2;
+							wr   <= 1;
+						end
+
+					3: begin
+							addr <= start_addr;
+						end
+						
+					default:
+						begin
+							fill_addr <= addr;
+							fill_data <= ioctl_dout;
+							addr <= addr + 1'd1;
+							wr   <= 1;
+						end
+				endcase
+			end
+		end
+		
+	end else begin
+	
+		old_force <= force_erase;
+	
+		// start erasing
+		if(force_erase & ~old_force) begin
+			erase_trigger <= 0;
+			fill_addr     <= 25'h1FFFF;
+			erase_mask    <= 25'h7FFFF;
+			end_addr      <= 25'h10000;
+			erase_clk_div <= 1;
+			erasing       <= 1;
+		end else if(erasing) begin
+			erase_clk_div <= erase_clk_div + 1'd1;
+			if(!erase_clk_div) begin
+				if(next_erase == end_addr) erasing <= 0;
+				else begin
+					fill_addr <= next_erase;
+					fill_data <= 0;
+					wr <= 1;
+				end
+			end
+		end
 	end
 end
 
