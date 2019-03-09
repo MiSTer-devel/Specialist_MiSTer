@@ -38,8 +38,8 @@ module video
 	output        VGA_DE,
 
 	// TV/VGA
-	input         forced_scandoubler,
-	input   [1:0] scale,
+	input         scandoubler,
+	input         hq2x,
 
 	// CPU bus
 	input	 [15:0] addr,
@@ -125,9 +125,7 @@ video_mixer #(.LINE_LENGTH(512), .HALF_DEPTH(1)) video_mixer
 	.G({G, G[2]}),
 	.B({B, B[2]}),
 
-	.scanlines({scale == 3, scale == 2}),
-	.hq2x(scale==1),
-	.scandoubler(scale || forced_scandoubler),
+	.scanlines(0),
 
 	.mono(0)
 );
