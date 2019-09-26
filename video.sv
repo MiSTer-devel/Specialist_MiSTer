@@ -68,13 +68,14 @@ always @(posedge clk_sys) begin
 				vc <= 9'd0;
 			end else begin
 				vc <= vc + 1'd1;
-
-				if(vc == 271) VSync  <= 1;
-				if(vc == 281) VSync  <= 0;
 			end
 		end else hc <= hc + 1'd1;
 
-		if(hc == 415) HSync  <= 1;
+		if(hc == 415) begin
+			HSync  <= 1;
+			if(vc == 271) VSync  <= 1;
+			if(vc == 281) VSync  <= 0;
+		end
 		if(hc == 463) HSync  <= 0;
 	end
 	if(ce_pix_n) begin
