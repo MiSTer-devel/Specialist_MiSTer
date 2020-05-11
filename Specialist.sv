@@ -157,6 +157,7 @@ wire [31:0] status;
 wire  [1:0] buttons;
 wire        forced_scandoubler;
 wire [10:0] ps2_key;
+wire [21:0] gamma_bus;
 
 wire        ioctl_wr;
 wire [24:0] ioctl_addr;
@@ -188,6 +189,7 @@ hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
 	.buttons(buttons),
 	.forced_scandoubler(forced_scandoubler),
 	.status(status),
+	.gamma_bus(gamma_bus),
 
 	.sd_lba(sd_lba),
 	.sd_rd(sd_rd),
@@ -734,7 +736,7 @@ defparam
 	altsyncram_component.clock_enable_output_a = "BYPASS",
 	altsyncram_component.clock_enable_output_b = "BYPASS",
 	altsyncram_component.indata_reg_b = "CLOCK0",
-	altsyncram_component.init_file = "bios.mif",
+	altsyncram_component.init_file = "rtl/bios.mif",
 	altsyncram_component.intended_device_family = "Cyclone V",
 	altsyncram_component.lpm_type = "altsyncram",
 	altsyncram_component.numwords_a = 393216,

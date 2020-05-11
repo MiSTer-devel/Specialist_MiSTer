@@ -40,6 +40,7 @@ module video
 	// TV/VGA
 	input         scandoubler,
 	input         hq2x,
+	inout  [21:0] gamma_bus,
 
 	// CPU bus
 	input	 [15:0] addr,
@@ -116,9 +117,11 @@ always_comb begin
 	endcase
 end
 
-video_mixer #(.LINE_LENGTH(512), .HALF_DEPTH(1)) video_mixer
+video_mixer #(.LINE_LENGTH(512), .HALF_DEPTH(1), .GAMMA(1)) video_mixer
 (
 	.*,
+
+	.clk_vid(clk_sys),
 	.ce_pix(ce_pix_p),
 	.ce_pix_out(ce_pix),
 	
