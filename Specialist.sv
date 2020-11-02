@@ -30,8 +30,8 @@ module emu
 	output        CE_PIXEL,
 
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
-	output  [7:0] VIDEO_ARX,
-	output  [7:0] VIDEO_ARY,
+	output [11:0] VIDEO_ARX,
+	output [11:0] VIDEO_ARY,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -55,6 +55,7 @@ module emu
 	// b[0]: osd button
 	output  [1:0] BUTTONS,
 
+	input         CLK_AUDIO, // 24.576 MHz
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
 	output        AUDIO_S,   // 1 - signed audio samples, 0 - unsigned
@@ -128,10 +129,11 @@ assign LED_DISK  = 0;
 assign LED_POWER = 0;
 assign BUTTONS   = 0;
 
-assign VIDEO_ARX = status[9] ? 8'd16 : 8'd4;
-assign VIDEO_ARY = status[9] ? 8'd9  : 8'd3;
-assign CLK_VIDEO = clk_sys;
+wire [1:0] ar = status[10:9];
 
+assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
+assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+assign CLK_VIDEO = clk_sys;
 
 `include "build_id.v"
 localparam CONF_STR =
@@ -141,7 +143,7 @@ localparam CONF_STR =
 	"F0,RKS,Load Tape;",
 	"S0,ODI,Mount Disk;",
 	"-;",
-	"O9,Aspect ratio,4:3,16:9;",
+	"O9A,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"O78,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
 	"-;",
 	"O4,CPU Speed,2MHz,4MHz;",
@@ -164,7 +166,7 @@ wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
 wire        ioctl_download;
 wire  [7:0] ioctl_index;
-wire        rks_load =  (ioctl_download & (ioctl_index==1));
+wire        rks_load =  (ioctl_download && !ioctl_index);
 
 wire [31:0] sd_lba;
 wire        sd_rd;
@@ -626,7 +628,7 @@ always@(posedge clk_sys) begin
 		erasing <= 0;
 
 		if(ioctl_wr) begin
-			if(ioctl_index) begin
+			if(rks_load) begin
 				case(ioctl_addr)
 					0: begin
 							start_addr[7:0] <= ioctl_dout;
