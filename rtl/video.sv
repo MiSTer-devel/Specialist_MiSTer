@@ -27,20 +27,15 @@ module video
 	input         clk_sys,
 	input         ce_pix_p, // Video clock enable (16 MHz)
 	input         ce_pix_n, // Video clock enable (16 MHz)
-	output        ce_pix,
 
 	// Video outputs
-	output  [7:0] VGA_R,
-	output  [7:0] VGA_G,
-	output  [7:0] VGA_B,
-	output        VGA_VS,
-	output        VGA_HS,
-	output        VGA_DE,
-
-	// TV/VGA
-	input         scandoubler,
-	input         hq2x,
-	inout  [21:0] gamma_bus,
+	output reg    HSync,
+	output reg    HBlank,
+	output reg    VSync,
+	output reg    VBlank,
+	output  [2:0] R,
+	output  [2:0] G,
+	output  [2:0] B,
 
 	// CPU bus
 	input	 [15:0] addr,
@@ -55,11 +50,8 @@ module video
 
 reg [8:0] hc;
 reg [8:0] vc;
-reg       HSync, HBlank;
-reg       VSync, VBlank;
 reg [7:0] bmp;
 reg [7:0] rgb;
-wire      blank = HBlank | VBlank;
 
 always @(posedge clk_sys) begin
 	if(ce_pix_p) begin
@@ -98,10 +90,8 @@ dpram vram
 	.q(vram_o)
 );
 
-wire [2:0] R,  G,  B;
-
 always_comb begin
-	casex({blank, bw_mode, mx})
+	casex({HBlank|VBlank, bw_mode, mx})
 		3'b1XX: {R,G,B} = {9{1'b0}};
 		2'b01X: {R,G,B} = {9{bmp[7]}};
 		2'b000: begin
@@ -116,22 +106,5 @@ always_comb begin
 		end
 	endcase
 end
-
-video_mixer #(.LINE_LENGTH(512), .HALF_DEPTH(1), .GAMMA(1)) video_mixer
-(
-	.*,
-
-	.clk_vid(clk_sys),
-	.ce_pix(ce_pix_p),
-	.ce_pix_out(ce_pix),
-	
-	.R({R, R[2]}),
-	.G({G, G[2]}),
-	.B({B, B[2]}),
-
-	.scanlines(0),
-
-	.mono(0)
-);
 
 endmodule

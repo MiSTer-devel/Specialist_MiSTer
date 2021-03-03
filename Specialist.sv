@@ -30,8 +30,9 @@ module emu
 	output        CE_PIXEL,
 
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
-	output [11:0] VIDEO_ARX,
-	output [11:0] VIDEO_ARY,
+	//if VIDEO_ARX[12] or VIDEO_ARY[12] is set then [11:0] contains scaled size instead of aspect ratio.
+	output [12:0] VIDEO_ARX,
+	output [12:0] VIDEO_ARY,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -40,7 +41,38 @@ module emu
 	output        VGA_VS,
 	output        VGA_DE,    // = ~(VBlank | HBlank)
 	output        VGA_F1,
-	output  [1:0] VGA_SL,
+	output [1:0]  VGA_SL,
+	output        VGA_SCALER, // Force VGA scaler
+
+	input  [11:0] HDMI_WIDTH,
+	input  [11:0] HDMI_HEIGHT,
+
+`ifdef USE_FB
+	// Use framebuffer in DDRAM (USE_FB=1 in qsf)
+	// FB_FORMAT:
+	//    [2:0] : 011=8bpp(palette) 100=16bpp 101=24bpp 110=32bpp
+	//    [3]   : 0=16bits 565 1=16bits 1555
+	//    [4]   : 0=RGB  1=BGR (for 16/24/32 modes)
+	//
+	// FB_STRIDE either 0 (rounded to 256 bytes) or multiple of pixel size (in bytes)
+	output        FB_EN,
+	output  [4:0] FB_FORMAT,
+	output [11:0] FB_WIDTH,
+	output [11:0] FB_HEIGHT,
+	output [31:0] FB_BASE,
+	output [13:0] FB_STRIDE,
+	input         FB_VBL,
+	input         FB_LL,
+	output        FB_FORCE_BLANK,
+
+	// Palette control for 8bit modes.
+	// Ignored for other video modes.
+	output        FB_PAL_CLK,
+	output  [7:0] FB_PAL_ADDR,
+	output [23:0] FB_PAL_DOUT,
+	input  [23:0] FB_PAL_DIN,
+	output        FB_PAL_WR,
+`endif
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
@@ -71,6 +103,7 @@ module emu
 	output        SD_CS,
 	input         SD_CD,
 
+`ifdef USE_DDRAM
 	//High latency DDR3 RAM interface
 	//Use for non-critical time purposes
 	output        DDRAM_CLK,
@@ -83,7 +116,9 @@ module emu
 	output [63:0] DDRAM_DIN,
 	output  [7:0] DDRAM_BE,
 	output        DDRAM_WE,
+`endif
 
+`ifdef USE_SDRAM
 	//SDRAM interface with lower latency
 	output        SDRAM_CLK,
 	output        SDRAM_CKE,
@@ -96,6 +131,20 @@ module emu
 	output        SDRAM_nCAS,
 	output        SDRAM_nRAS,
 	output        SDRAM_nWE,
+`endif
+
+`ifdef DUAL_SDRAM
+	//Secondary SDRAM
+	input         SDRAM2_EN,
+	output        SDRAM2_CLK,
+	output [12:0] SDRAM2_A,
+	output  [1:0] SDRAM2_BA,
+	inout  [15:0] SDRAM2_DQ,
+	output        SDRAM2_nCS,
+	output        SDRAM2_nCAS,
+	output        SDRAM2_nRAS,
+	output        SDRAM2_nWE,
+`endif
 
 	input         UART_CTS,
 	output        UART_RTS,
@@ -128,11 +177,22 @@ assign LED_USER  = filling;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 assign BUTTONS   = 0;
+assign VGA_SCALER= 0;
 
 wire [1:0] ar = status[10:9];
+video_freak video_freak
+(
+	.*,
+	.VGA_DE_IN(VGA_DE),
+	.VGA_DE(),
 
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+	.ARX((!ar) ? 12'd4 : (ar - 1'd1)),
+	.ARY((!ar) ? 12'd3 : 12'd0),
+	.CROP_SIZE(0),
+	.CROP_OFF(0),
+	.SCALE(status[12:11])
+);
+
 assign CLK_VIDEO = clk_sys;
 
 `include "build_id.v"
@@ -145,6 +205,7 @@ localparam CONF_STR =
 	"-;",
 	"O9A,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"O78,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
+	"OBC,Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
 	"-;",
 	"O4,CPU Speed,2MHz,4MHz;",
 	"O23,Model,Original,MX & Disk,MX;",
@@ -410,18 +471,16 @@ reg  [7:0] color_mx;
 reg        bw_mode;
 
 wire [1:0] scale = status[8:7];
-assign VGA_SL = scale ? scale - 1'd1 : 2'd0;
-assign VGA_F1 = 0;
+
+wire       HSync,HBlank,VSync,VBlank;
+wire [2:0] R,G,B;
 
 video video
 (
 	.*,
-	.ce_pix(CE_PIXEL),
 	.addr(addrbus),
 	.din(cpu_o),
 	.we(~cpu_wr_n && !page),
-	.hq2x(scale==1),
-	.scandoubler(scale || forced_scandoubler),
 	.color(mx ? color_mx : {1'b0, ~color[1], ~color[2], ~color[0], 4'b0000})
 );
 
@@ -435,6 +494,20 @@ always @(posedge clk_sys) begin
 	if(~old_key & color_key) bw_mode <= ~bw_mode;
 end
 
+assign VGA_SL = scale ? scale - 1'd1 : 2'd0;
+assign VGA_F1 = 0;
+
+video_mixer #(.LINE_LENGTH(512), .HALF_DEPTH(1), .GAMMA(1)) video_mixer
+(
+	.*,
+	.ce_pix(ce_pix_p),
+	.hq2x(scale==1),
+	.scandoubler(scale || forced_scandoubler),
+
+	.R({R, R[2]}),
+	.G({G, G[2]}),
+	.B({B, B[2]})
+);
 
 //////////////////   KEYBOARD   ///////////////////
 wire  [5:0] row_in;
